@@ -1,0 +1,49 @@
+---
+- name: Register Edge Node to Redis Inventory API
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    # Set this to the IP or domain of your Go API server
+    inventory_api_url: "http://10.0.0.50:8080/register"
+    
+    # Optional: Define custom roles/groups locally (e.g., via a local file or cloud init)
+    # local_roles: ["webservers", "prod"]
+
+  tasks:
+    - name: Phone home and register with the Inventory API
+      ansible.builtin.uri:
+        url: "{{ inventory_api_url }}"
+        method: POST
+        body_format: json
+        body:
+          # Matches the NodePayload struct in redis_inventory.go
+          hostname: "{{ ansible_hostname }}"
+          
+          # Dynamically assign groups based on OS, plus any custom roles
+          groups:
+            - "{{ ansible_distribution | lower }}_servers"
+            - "dynamic_nodes"
+            # - "{{ local_roles | default([]) }}"
+            
+          # Send variables that you want available in your central control node
+          vars:
+            ansible_host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+            os: "{{ ansible_distribution }}"
+            os_version: "{{ ansible_distribution_version }}"
+            arch: "{{ ansible_architecture }}"
+            cpus: "{{ ansible_processor_vcpus }}"
+            ram_mb: "{{ ansible_memtotal_mb }}"
+            
+        # Ensure the API responds successfully
+        status_code: 200
+      
+      register: api_response
+      retries: 3
+      delay: 5
+      until: api_response.status == 200
+
+    - name: Debug API Response
+      ansible.builtin.debug:
+        msg: "Successfully registered {{ ansible_hostname }} with API. Response: {{ api_response.msg }}"

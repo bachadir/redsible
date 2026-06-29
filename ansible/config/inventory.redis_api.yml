@@ -1,0 +1,5 @@
+# Ansible config to trigger the custom inventory plugin
+# Ensure this file ends in 'redis_api.yml' or 'redis_api.yaml'
+
+plugin: redis_api
+api_url: "http://127.0.0.1:8080/inventory"
