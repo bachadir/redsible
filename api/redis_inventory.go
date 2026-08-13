@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +32,18 @@ import (
 
 // Global Redis Context
 var ctx = context.Background()
+
+// Helper to set CORS headers and handle preflight requests
+func enableCORS(w http.ResponseWriter, r *http.Request) bool {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return true
+	}
+	return false
+}
 
 // ---------------------------------------------------------------------
 // Data Structures
@@ -119,12 +132,16 @@ func main() {
 func startAPIServer(rdb *redis.Client, ttlDuration time.Duration) {
 	// Expose the inventory over HTTP for the Ansible Plugin
 	http.HandleFunc("/inventory", func(w http.ResponseWriter, r *http.Request) {
+		if enableCORS(w, r) {
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "Only GET is supported", http.StatusMethodNotAllowed)
 			return
 		}
 		output, err := getInventoryJSON(rdb)
 		if err != nil {
+			log.Printf("Error generating inventory: %v", err)
 			http.Error(w, "Failed to generate inventory", http.StatusInternalServerError)
 			return
 		}
@@ -133,6 +150,9 @@ func startAPIServer(rdb *redis.Client, ttlDuration time.Duration) {
 	})
 
 	http.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		if enableCORS(w, r) {
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "Only POST is supported", http.StatusMethodNotAllowed)
 			return
@@ -185,6 +205,9 @@ func startAPIServer(rdb *redis.Client, ttlDuration time.Duration) {
 			}
 		}
 
+		// Ensure groups are deterministically sorted
+		sort.Strings(payload.Groups)
+
 		// Convert the merged payload back to a JSON string
 		mergedData, err := json.Marshal(payload)
 		if err != nil {
@@ -213,8 +236,11 @@ func startAPIServer(rdb *redis.Client, ttlDuration time.Duration) {
 
 	// Also implement the graceful deregistration endpoint (Strategy 2)
 	http.HandleFunc("/deregister/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			http.Error(w, "Only DELETE is supported", http.StatusMethodNotAllowed)
+		if enableCORS(w, r) {
+			return
+		}
+		if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+			http.Error(w, "Only DELETE and POST are supported", http.StatusMethodNotAllowed)
 			return
 		}
 
@@ -261,7 +287,7 @@ func getInventoryJSON(rdb *redis.Client) ([]byte, error) {
 		var err error
 		keys, cursor, err = rdb.Scan(ctx, cursor, "host:*", 1000).Result()
 		if err != nil {
-			log.Fatalf("Error scanning Redis: %v", err)
+			return nil, fmt.Errorf("error scanning Redis: %w", err)
 		}
 		allKeys = append(allKeys, keys...)
 		if cursor == 0 {
@@ -273,7 +299,7 @@ func getInventoryJSON(rdb *redis.Client) ([]byte, error) {
 	if len(allKeys) > 0 {
 		values, err := rdb.MGet(ctx, allKeys...).Result()
 		if err != nil {
-			log.Fatalf("Error executing MGET: %v", err)
+			return nil, fmt.Errorf("error executing MGET: %w", err)
 		}
 
 		// Step 3: Iterate through the returned JSON strings and build the inventory map

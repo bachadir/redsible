@@ -81,7 +81,8 @@ class InventoryModule(BaseInventoryPlugin):
             for host in group_data.get('hosts', []):
                 self.inventory.add_host(host, group=group)
 
-        # 3. Assign variables to individual hosts
+        # 3. Ensure all hosts exist in inventory and assign host variables
         for host, variables in hostvars.items():
+            self.inventory.add_host(host)
             for var_name, var_value in variables.items():
                 self.inventory.set_variable(host, var_name, var_value)
