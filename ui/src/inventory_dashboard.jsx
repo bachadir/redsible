@@ -9,17 +9,19 @@ import {
 const MOCK_API_RESPONSE = {
     "_meta": {
         "hostvars": {
-            "web-prod-01.internal": { "ansible_host": "10.0.1.5", "os": "Ubuntu", "os_version": "22.04 LTS", "arch": "x86_64", "cpus": "4", "ram_mb": "8192", "environment": "production", "datacenter": "us-east-1", "kernel": "5.15.0-88-generic" },
-            "web-prod-02.internal": { "ansible_host": "10.0.1.6", "os": "Ubuntu", "os_version": "22.04 LTS", "arch": "x86_64", "cpus": "4", "ram_mb": "8192", "environment": "production", "datacenter": "us-east-1", "kernel": "5.15.0-88-generic" },
-            "db-prod-01.internal": { "ansible_host": "10.0.2.10", "os": "RHEL", "os_version": "9.2", "arch": "aarch64", "cpus": "8", "ram_mb": "32768", "environment": "production", "datacenter": "us-east-1", "engine": "postgresql-15" },
-            "worker-dev-01.internal": { "ansible_host": "10.0.3.50", "os": "Debian", "os_version": "11", "arch": "x86_64", "cpus": "2", "ram_mb": "4096", "environment": "development", "datacenter": "eu-central-1", "role": "celery-worker" }
+            "web-prod-01.internal": { "ansible_host": "10.0.1.5", "os": "Ubuntu", "os_version": "22.04 LTS", "arch": "x86_64", "cpus": "4", "ram_mb": "8192", "environment": "production", "datacenter": "us-east-1", "kernel": "5.15.0-88-generic", "status": "online", "unresponsive": false },
+            "web-prod-02.internal": { "ansible_host": "10.0.1.6", "os": "Ubuntu", "os_version": "22.04 LTS", "arch": "x86_64", "cpus": "4", "ram_mb": "8192", "environment": "production", "datacenter": "us-east-1", "kernel": "5.15.0-88-generic", "status": "online", "unresponsive": false },
+            "db-prod-01.internal": { "ansible_host": "10.0.2.10", "os": "RHEL", "os_version": "9.2", "arch": "aarch64", "cpus": "8", "ram_mb": "32768", "environment": "production", "datacenter": "us-east-1", "engine": "postgresql-15", "status": "online", "unresponsive": false },
+            "worker-dev-01.internal": { "ansible_host": "10.0.3.50", "os": "Debian", "os_version": "11", "arch": "x86_64", "cpus": "2", "ram_mb": "4096", "environment": "development", "datacenter": "eu-central-1", "role": "celery-worker", "status": "online", "unresponsive": false },
+            "node-stale-01.internal": { "ansible_host": "10.0.4.99", "os": "Ubuntu", "os_version": "20.04 LTS", "arch": "x86_64", "cpus": "2", "ram_mb": "4096", "environment": "staging", "datacenter": "us-west-2", "status": "unresponsive", "unresponsive": true, "last_seen_seconds_ago": 8400 }
         }
     },
-    "all": { "hosts": ["web-prod-01.internal", "web-prod-02.internal", "db-prod-01.internal", "worker-dev-01.internal"] },
+    "all": { "hosts": ["web-prod-01.internal", "web-prod-02.internal", "db-prod-01.internal", "worker-dev-01.internal", "node-stale-01.internal"] },
     "webservers": { "hosts": ["web-prod-01.internal", "web-prod-02.internal"] },
     "databases": { "hosts": ["db-prod-01.internal"] },
     "prod": { "hosts": ["web-prod-01.internal", "web-prod-02.internal", "db-prod-01.internal"] },
-    "dev": { "hosts": ["worker-dev-01.internal"] }
+    "dev": { "hosts": ["worker-dev-01.internal"] },
+    "unresponsive": { "hosts": ["node-stale-01.internal"] }
 };
 
 export default function App() {
@@ -126,7 +128,6 @@ export default function App() {
         try {
             const res = await fetch(`/api/deregister/${hostname}`, { method: 'DELETE' });
             if (!res.ok) {
-                // Try fallback POST or direct endpoint
                 await fetch(`/api/deregister/${hostname}`, { method: 'POST' });
             }
             setHosts(prev => prev.filter(h => h.hostname !== hostname));
@@ -134,7 +135,6 @@ export default function App() {
             showNotice(`Node ${hostname} deregistered successfully`);
         } catch (err) {
             console.error("Deregister error:", err);
-            // Local state fallback for demo/unreachable server
             setHosts(prev => prev.filter(h => h.hostname !== hostname));
             setSelectedHost(null);
             showNotice(`Removed ${hostname} from active view`);
@@ -146,6 +146,14 @@ export default function App() {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     };
+
+    const isHostUnresponsive = (host) => {
+        return host.vars.unresponsive === true ||
+            host.vars.status === 'unresponsive' ||
+            host.groups.includes('unresponsive');
+    };
+
+    const unresponsiveHostsCount = hosts.filter(isHostUnresponsive).length;
 
     const filteredHosts = hosts.filter(host => {
         const matchesSearch =
@@ -195,7 +203,7 @@ export default function App() {
                         <div className="flex items-center gap-2">
                             <h1 className="text-lg font-bold text-slate-100 tracking-tight">Redsible Dashboard</h1>
                             <span className="px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                v2.0 Live
+                                2-Tier Eviction Active
                             </span>
                         </div>
                         <p className="text-xs text-slate-400 font-medium tracking-wide">
@@ -277,10 +285,17 @@ export default function App() {
                                     <div>
                                         <div className="flex flex-wrap items-center gap-3">
                                             <h2 className="text-2xl font-bold text-white tracking-tight">{selectedHost.hostname}</h2>
-                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                                                Online (Redis Active)
-                                            </span>
+                                            {isHostUnresponsive(selectedHost) ? (
+                                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 animate-pulse">
+                                                    <AlertTriangle size={14} />
+                                                    Unresponsive (Missed Heartbeat)
+                                                </span>
+                                            ) : (
+                                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                                                    Online (Redis Active)
+                                                </span>
+                                            )}
                                         </div>
                                         <p className="text-sm text-slate-400 mt-1 flex items-center gap-2">
                                             <Network size={14} className="text-slate-500" />
@@ -293,7 +308,7 @@ export default function App() {
                                     <span className="text-xs text-slate-400 mr-2 font-medium">Assigned Groups:</span>
                                     {selectedHost.groups.length > 0 ? (
                                         selectedHost.groups.map(g => (
-                                            <span key={g} className="px-3 py-1 rounded-lg text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                                            <span key={g} className={`px-3 py-1 rounded-lg text-xs font-semibold border ${g === 'unresponsive' ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20'}`}>
                                                 {g}
                                             </span>
                                         ))
@@ -413,13 +428,24 @@ export default function App() {
                                 </div>
                             </div>
 
-                            <div className="bg-slate-800/70 border border-slate-700/60 p-4 rounded-xl flex items-center gap-4">
-                                <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-lg">
-                                    <Database size={20} />
+                            {/* Unresponsive Nodes Clickable Counter Card */}
+                            <div
+                                onClick={() => setSelectedGroup(selectedGroup === 'unresponsive' ? 'all' : 'unresponsive')}
+                                className={`p-4 rounded-xl border flex items-center gap-4 cursor-pointer transition-all ${selectedGroup === 'unresponsive' ? 'bg-amber-500/20 border-amber-400 ring-2 ring-amber-400/50' : 'bg-slate-800/70 border-slate-700/60 hover:bg-slate-800 hover:border-amber-500/40'}`}
+                            >
+                                <div className="p-3 bg-amber-500/10 text-amber-400 rounded-lg">
+                                    <AlertTriangle size={20} className={unresponsiveHostsCount > 0 ? "animate-bounce text-amber-400" : ""} />
                                 </div>
                                 <div>
-                                    <div className="text-sm font-bold text-emerald-400">{hosts.length > 0 ? "Active" : "Empty DB"}</div>
-                                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Redis Status</div>
+                                    <div className="text-2xl font-black text-amber-400 flex items-center gap-2">
+                                        {unresponsiveHostsCount}
+                                        {unresponsiveHostsCount > 0 && (
+                                            <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-2 py-0.5 rounded-full border border-amber-500/30 uppercase">
+                                                Warning
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Unresponsive Nodes</div>
                                 </div>
                             </div>
 
@@ -428,8 +454,8 @@ export default function App() {
                                     <Activity size={20} />
                                 </div>
                                 <div>
-                                    <div className="text-sm font-bold text-blue-400">2h Auto-TTL</div>
-                                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Eviction Policy</div>
+                                    <div className="text-sm font-bold text-blue-400">2-Tier Policy</div>
+                                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">1x Warn • 2x Evict</div>
                                 </div>
                             </div>
                         </div>
@@ -459,7 +485,7 @@ export default function App() {
                                             onChange={(e) => setSelectedGroup(e.target.value)}
                                         >
                                             {groups.map(g => (
-                                                <option key={g} value={g}>{g === 'all' ? 'All Groups' : g}</option>
+                                                <option key={g} value={g}>{g === 'all' ? 'All Groups' : g === 'unresponsive' ? '⚠️ Unresponsive Only' : g}</option>
                                             ))}
                                         </select>
                                     </div>
@@ -512,7 +538,7 @@ export default function App() {
                                     </div>
 
                                     <button
-                                        onClick={() => { setOsFilter('all'); setMinCpu(''); setMinRam(''); }}
+                                        onClick={() => { setOsFilter('all'); setMinCpu(''); setMinRam(''); setSelectedGroup('all'); }}
                                         className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold mb-2"
                                     >
                                         Clear Filters
@@ -576,7 +602,7 @@ export default function App() {
                                     <table className="min-w-full divide-y divide-slate-700/60">
                                         <thead className="bg-slate-850">
                                             <tr>
-                                                <th scope="col" className="px-6 py-4 text-left text-xs font-bold text-slate-400 uppercase tracking-wider">Hostname (Click for Details)</th>
+                                                <th scope="col" className="px-6 py-4 text-left text-xs font-bold text-slate-400 uppercase tracking-wider">Hostname & Status</th>
                                                 <th scope="col" className="px-6 py-4 text-left text-xs font-bold text-slate-400 uppercase tracking-wider">Network IP</th>
                                                 <th scope="col" className="px-6 py-4 text-left text-xs font-bold text-slate-400 uppercase tracking-wider">Hardware Specs</th>
                                                 <th scope="col" className="px-6 py-4 text-left text-xs font-bold text-slate-400 uppercase tracking-wider">Ansible Groups</th>
@@ -590,66 +616,78 @@ export default function App() {
                                                     </td>
                                                 </tr>
                                             ) : (
-                                                filteredHosts.map((host) => (
-                                                    <tr
-                                                        key={host.hostname}
-                                                        onClick={() => setSelectedHost(host)}
-                                                        className="hover:bg-indigo-600/10 cursor-pointer transition-colors group"
-                                                    >
-                                                        <td className="px-6 py-4 whitespace-nowrap">
-                                                            <div className="flex items-center">
-                                                                <div className="flex-shrink-0 h-10 w-10 flex items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 group-hover:scale-105 group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                                                                    <Server size={20} />
-                                                                </div>
-                                                                <div className="ml-4">
-                                                                    <div className="text-sm font-bold text-slate-100 group-hover:text-indigo-300 transition-colors">
-                                                                        {host.hostname}
+                                                filteredHosts.map((host) => {
+                                                    const unresponsive = isHostUnresponsive(host);
+                                                    return (
+                                                        <tr
+                                                            key={host.hostname}
+                                                            onClick={() => setSelectedHost(host)}
+                                                            className={`cursor-pointer transition-colors group ${unresponsive ? 'hover:bg-amber-500/10 bg-amber-500/5' : 'hover:bg-indigo-600/10'}`}
+                                                        >
+                                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                                <div className="flex items-center">
+                                                                    <div className={`flex-shrink-0 h-10 w-10 flex items-center justify-center rounded-xl transition-all ${unresponsive ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 group-hover:scale-105 group-hover:bg-indigo-600 group-hover:text-white'}`}>
+                                                                        <Server size={20} />
                                                                     </div>
-                                                                    <div className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
-                                                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                                                                        Active (Click to view full specs)
+                                                                    <div className="ml-4">
+                                                                        <div className="text-sm font-bold text-slate-100 group-hover:text-indigo-300 transition-colors">
+                                                                            {host.hostname}
+                                                                        </div>
+                                                                        <div className="text-xs flex items-center gap-1.5 mt-0.5">
+                                                                            {unresponsive ? (
+                                                                                <span className="text-amber-400 flex items-center gap-1 font-semibold">
+                                                                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
+                                                                                    Unresponsive (Stale Heartbeat)
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className="text-slate-400 flex items-center gap-1">
+                                                                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                                                                    Active (Online)
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
                                                                     </div>
                                                                 </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4 whitespace-nowrap">
-                                                            <div className="flex items-center gap-1.5">
-                                                                <Network size={14} className="text-slate-500" />
-                                                                <span className="font-mono text-xs bg-slate-950 px-2.5 py-1 rounded-md text-indigo-300 border border-slate-800">
-                                                                    {host.vars.ansible_host || 'N/A'}
-                                                                </span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4 whitespace-nowrap">
-                                                            <div className="text-sm text-slate-200 flex items-center gap-4">
-                                                                <div className="flex items-center gap-1.5" title="OS">
-                                                                    <HardDrive size={15} className="text-slate-400" />
-                                                                    <span className="text-xs font-medium">{host.vars.os || 'Linux'} {host.vars.os_version || ''}</span>
-                                                                </div>
-                                                                <div className="flex items-center gap-1.5" title="CPU & RAM">
-                                                                    <Cpu size={15} className="text-slate-400" />
-                                                                    <span className="text-xs text-slate-400 font-medium">
-                                                                        {host.vars.cpus ? `${host.vars.cpus} vCPU` : ''}
-                                                                        {host.vars.ram_mb ? ` • ${Math.round(host.vars.ram_mb / 1024)}GB` : ''}
+                                                            </td>
+                                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <Network size={14} className="text-slate-500" />
+                                                                    <span className="font-mono text-xs bg-slate-950 px-2.5 py-1 rounded-md text-indigo-300 border border-slate-800">
+                                                                        {host.vars.ansible_host || 'N/A'}
                                                                     </span>
                                                                 </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <div className="flex flex-wrap gap-1.5">
-                                                                {host.groups.length > 0 ? (
-                                                                    host.groups.map(group => (
-                                                                        <span key={group} className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
-                                                                            {group}
+                                                            </td>
+                                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                                <div className="text-sm text-slate-200 flex items-center gap-4">
+                                                                    <div className="flex items-center gap-1.5" title="OS">
+                                                                        <HardDrive size={15} className="text-slate-400" />
+                                                                        <span className="text-xs font-medium">{host.vars.os || 'Linux'} {host.vars.os_version || ''}</span>
+                                                                    </div>
+                                                                    <div className="flex items-center gap-1.5" title="CPU & RAM">
+                                                                        <Cpu size={15} className="text-slate-400" />
+                                                                        <span className="text-xs text-slate-400 font-medium">
+                                                                            {host.vars.cpus ? `${host.vars.cpus} vCPU` : ''}
+                                                                            {host.vars.ram_mb ? ` • ${Math.round(host.vars.ram_mb / 1024)}GB` : ''}
                                                                         </span>
-                                                                    ))
-                                                                ) : (
-                                                                    <span className="text-xs text-slate-500 italic">Default</span>
-                                                                )}
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                ))
+                                                                    </div>
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-6 py-4">
+                                                                <div className="flex flex-wrap gap-1.5">
+                                                                    {host.groups.length > 0 ? (
+                                                                        host.groups.map(group => (
+                                                                            <span key={group} className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold border ${group === 'unresponsive' ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20'}`}>
+                                                                                {group}
+                                                                            </span>
+                                                                        ))
+                                                                    ) : (
+                                                                        <span className="text-xs text-slate-500 italic">Default</span>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })
                                             )}
                                         </tbody>
                                     </table>

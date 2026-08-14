@@ -111,6 +111,7 @@ type NodePayload struct {
 	Hostname string                 `json:"hostname"`
 	Groups   []string               `json:"groups"`
 	Vars     map[string]interface{} `json:"vars"`
+	LastSeen int64                  `json:"last_seen,omitempty"`
 }
 
 // AnsibleInventory represents the strict JSON structure Ansible expects
@@ -193,7 +194,7 @@ func main() {
 	if *serveFlag {
 		startAPIServer(rdb, cfg, ttlDuration)
 	} else if *listFlag {
-		generateInventory(rdb)
+		generateInventory(rdb, ttlDuration)
 	} else if *hostFlag != "" {
 		generateHostVars(rdb, *hostFlag)
 	} else {
@@ -218,7 +219,7 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 			http.Error(w, "Only GET is supported", http.StatusMethodNotAllowed)
 			return
 		}
-		output, err := getInventoryJSON(rdb)
+		output, err := getInventoryJSON(rdb, ttlDuration)
 		if err != nil {
 			log.Printf("Error generating inventory: %v", err)
 			http.Error(w, "Failed to generate inventory", http.StatusInternalServerError)
@@ -248,6 +249,9 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 			http.Error(w, "Hostname is required", http.StatusBadRequest)
 			return
 		}
+
+		// Update registration timestamp
+		payload.LastSeen = time.Now().Unix()
 
 		redisKey := fmt.Sprintf("host:%s", payload.Hostname)
 
@@ -294,20 +298,15 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 			return
 		}
 
-		// 2. Write Optimization: If data hasn't changed, ONLY refresh the TTL
-		if string(mergedData) == existingData {
-			rdb.Expire(ctx, redisKey, ttlDuration)
-			log.Printf("Refreshed TTL for node: %s", payload.Hostname)
-		} else {
-			// Write the updated data to Redis and set the TTL
-			err = rdb.Set(ctx, redisKey, mergedData, ttlDuration).Err()
-			if err != nil {
-				log.Printf("Redis error: %v", err)
-				http.Error(w, "Failed to save to database", http.StatusInternalServerError)
-				return
-			}
-			log.Printf("Updated node: %s", payload.Hostname)
+		// Set key in Redis with 2x TTL duration so unresponsive warning window persists
+		twoTimesTTL := 2 * ttlDuration
+		err = rdb.Set(ctx, redisKey, mergedData, twoTimesTTL).Err()
+		if err != nil {
+			log.Printf("Redis error: %v", err)
+			http.Error(w, "Failed to save to database", http.StatusInternalServerError)
+			return
 		}
+		log.Printf("Registered node: %s (TTL: %s, Hard Eviction: %s)", payload.Hostname, ttlDuration, twoTimesTTL)
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Node registered successfully\n"))
@@ -348,8 +347,8 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 // 2. The Dynamic Inventory Fetcher (Queries)
 // ---------------------------------------------------------------------
 
-// getInventoryJSON queries Redis and returns the raw JSON bytes
-func getInventoryJSON(rdb *redis.Client) ([]byte, error) {
+// getInventoryJSON queries Redis and returns the raw JSON bytes with 2-tier eviction logic
+func getInventoryJSON(rdb *redis.Client, ttlDuration time.Duration) ([]byte, error) {
 	// Initialize the inventory structures
 	inventory := AnsibleInventory{
 		Meta: Meta{
@@ -357,6 +356,9 @@ func getInventoryJSON(rdb *redis.Client) ([]byte, error) {
 		},
 		Groups: make(map[string]GroupDef),
 	}
+
+	now := time.Now().Unix()
+	ttlSeconds := int64(ttlDuration.Seconds())
 
 	// Step 1: SCAN for all keys starting with "host:"
 	// SCAN is safe for production Redis as it doesn't block the database
@@ -382,7 +384,7 @@ func getInventoryJSON(rdb *redis.Client) ([]byte, error) {
 			return nil, fmt.Errorf("error executing MGET: %w", err)
 		}
 
-		// Step 3: Iterate through the returned JSON strings and build the inventory map
+		// Step 3: Iterate through returned JSON strings and apply 2-tier eviction / unresponsive check
 		for _, val := range values {
 			if val == nil {
 				continue
@@ -393,6 +395,40 @@ func getInventoryJSON(rdb *redis.Client) ([]byte, error) {
 			var node NodePayload
 			if err := json.Unmarshal([]byte(strVal), &node); err != nil {
 				continue // Skip corrupted records safely
+			}
+
+			if node.LastSeen == 0 {
+				node.LastSeen = now
+			}
+
+			elapsed := now - node.LastSeen
+
+			// Tier 2: Hard eviction if elapsed > 2 * ttlSeconds
+			if ttlSeconds > 0 && elapsed > 2*ttlSeconds {
+				rdb.Del(ctx, fmt.Sprintf("host:%s", node.Hostname))
+				log.Printf("Evicted node %s (inactive for %ds > 2x TTL)", node.Hostname, elapsed)
+				continue
+			}
+
+			if node.Vars == nil {
+				node.Vars = make(map[string]interface{})
+			}
+
+			node.Vars["last_seen"] = node.LastSeen
+			node.Vars["last_seen_seconds_ago"] = elapsed
+
+			// Tier 1: Unresponsive warning if elapsed > ttlSeconds (and <= 2 * ttlSeconds)
+			if ttlSeconds > 0 && elapsed > ttlSeconds {
+				node.Vars["status"] = "unresponsive"
+				node.Vars["unresponsive"] = true
+
+				// Assign to dynamic group "unresponsive"
+				g := inventory.Groups["unresponsive"]
+				g.Hosts = append(g.Hosts, node.Hostname)
+				inventory.Groups["unresponsive"] = g
+			} else {
+				node.Vars["status"] = "online"
+				node.Vars["unresponsive"] = false
 			}
 
 			// Add the node's variables to the _meta.hostvars dictionary
@@ -420,8 +456,8 @@ func getInventoryJSON(rdb *redis.Client) ([]byte, error) {
 }
 
 // generateInventory queries Redis and prints the JSON Ansible expects to stdout
-func generateInventory(rdb *redis.Client) {
-	output, err := getInventoryJSON(rdb)
+func generateInventory(rdb *redis.Client, ttlDuration time.Duration) {
+	output, err := getInventoryJSON(rdb, ttlDuration)
 	if err != nil {
 		log.Fatalf("Error generating JSON: %v", err)
 	}
