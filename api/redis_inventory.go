@@ -496,8 +496,14 @@ func getInventoryJSON(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Durati
 				}
 			}
 
-			// Assign the node to its declared groups
+			// Deduplicate node.Groups before assigning
+			groupSet := make(map[string]bool)
 			for _, group := range node.Groups {
+				groupSet[group] = true
+			}
+
+			// Assign the node to its declared groups
+			for group := range groupSet {
 				g, exists := inventory.Groups[group]
 				if !exists {
 					g = GroupDef{Hosts: []string{}}
