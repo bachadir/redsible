@@ -39,9 +39,10 @@ var ctx = context.Background()
 // ---------------------------------------------------------------------
 
 type AppConfig struct {
-	Server ServerConfig `yaml:"server"`
-	Redis  RedisConfig  `yaml:"redis"`
-	TTL    string       `yaml:"ttl"`
+	Server          ServerConfig `yaml:"server"`
+	Redis           RedisConfig  `yaml:"redis"`
+	TTL             string       `yaml:"ttl"`
+	TwoTierEviction bool         `yaml:"two_tier_eviction"`
 }
 
 type ServerConfig struct {
@@ -67,7 +68,8 @@ func loadConfig(configPath string) (*AppConfig, error) {
 			Password: "",
 			DB:       0,
 		},
-		TTL: "2h",
+		TTL:             "2h",
+		TwoTierEviction: true,
 	}
 
 	if configPath == "" {
@@ -122,7 +124,9 @@ type AnsibleInventory struct {
 }
 
 type Meta struct {
-	Hostvars map[string]map[string]interface{} `json:"hostvars"`
+	Hostvars        map[string]map[string]interface{} `json:"hostvars"`
+	TwoTierEviction bool                              `json:"two_tier_eviction"`
+	TTL             string                            `json:"ttl,omitempty"`
 }
 
 type GroupDef struct {
@@ -154,6 +158,7 @@ func main() {
 	redisPass := flag.String("redis-pass", "", "Redis password (overrides config)")
 	portFlag := flag.Int("port", 0, "HTTP API server port (overrides config)")
 	ttlFlag := flag.String("ttl", "", "Time-To-Live for inventory records (e.g. '30m', '2h')")
+	twoTierFlag := flag.Bool("two-tier", true, "Enable 2-tier unresponsive warning before eviction")
 
 	flag.Parse()
 
@@ -176,6 +181,12 @@ func main() {
 	if *ttlFlag != "" {
 		cfg.TTL = *ttlFlag
 	}
+	// Check if --two-tier flag was explicitly provided
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "two-tier" {
+			cfg.TwoTierEviction = *twoTierFlag
+		}
+	})
 
 	// Parse the TTL into a usable Go time.Duration
 	ttlDuration, err := time.ParseDuration(cfg.TTL)
@@ -194,7 +205,7 @@ func main() {
 	if *serveFlag {
 		startAPIServer(rdb, cfg, ttlDuration)
 	} else if *listFlag {
-		generateInventory(rdb, ttlDuration)
+		generateInventory(rdb, cfg, ttlDuration)
 	} else if *hostFlag != "" {
 		generateHostVars(rdb, *hostFlag)
 	} else {
@@ -219,7 +230,7 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 			http.Error(w, "Only GET is supported", http.StatusMethodNotAllowed)
 			return
 		}
-		output, err := getInventoryJSON(rdb, ttlDuration)
+		output, err := getInventoryJSON(rdb, cfg, ttlDuration)
 		if err != nil {
 			log.Printf("Error generating inventory: %v", err)
 			http.Error(w, "Failed to generate inventory", http.StatusInternalServerError)
@@ -298,15 +309,21 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 			return
 		}
 
-		// Set key in Redis with 2x TTL duration so unresponsive warning window persists
-		twoTimesTTL := 2 * ttlDuration
-		err = rdb.Set(ctx, redisKey, mergedData, twoTimesTTL).Err()
+		// Set key in Redis: 2x TTL if 2-tier eviction is enabled, else 1x TTL
+		var redisTTL time.Duration
+		if cfg.TwoTierEviction {
+			redisTTL = 2 * ttlDuration
+		} else {
+			redisTTL = ttlDuration
+		}
+
+		err = rdb.Set(ctx, redisKey, mergedData, redisTTL).Err()
 		if err != nil {
 			log.Printf("Redis error: %v", err)
 			http.Error(w, "Failed to save to database", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("Registered node: %s (TTL: %s, Hard Eviction: %s)", payload.Hostname, ttlDuration, twoTimesTTL)
+		log.Printf("Registered node: %s (TTL: %s, 2-Tier Eviction: %v)", payload.Hostname, ttlDuration, cfg.TwoTierEviction)
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Node registered successfully\n"))
@@ -339,7 +356,7 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 	})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	log.Printf("Starting Inventory Ingest API on %s (TTL: %s)...", addr, cfg.TTL)
+	log.Printf("Starting Inventory Ingest API on %s (TTL: %s, 2-Tier Eviction: %v)...", addr, cfg.TTL, cfg.TwoTierEviction)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
@@ -347,12 +364,14 @@ func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration
 // 2. The Dynamic Inventory Fetcher (Queries)
 // ---------------------------------------------------------------------
 
-// getInventoryJSON queries Redis and returns the raw JSON bytes with 2-tier eviction logic
-func getInventoryJSON(rdb *redis.Client, ttlDuration time.Duration) ([]byte, error) {
+// getInventoryJSON queries Redis and returns the raw JSON bytes
+func getInventoryJSON(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration) ([]byte, error) {
 	// Initialize the inventory structures
 	inventory := AnsibleInventory{
 		Meta: Meta{
-			Hostvars: make(map[string]map[string]interface{}),
+			Hostvars:        make(map[string]map[string]interface{}),
+			TwoTierEviction: cfg.TwoTierEviction,
+			TTL:             cfg.TTL,
 		},
 		Groups: make(map[string]GroupDef),
 	}
@@ -384,7 +403,7 @@ func getInventoryJSON(rdb *redis.Client, ttlDuration time.Duration) ([]byte, err
 			return nil, fmt.Errorf("error executing MGET: %w", err)
 		}
 
-		// Step 3: Iterate through returned JSON strings and apply 2-tier eviction / unresponsive check
+		// Step 3: Iterate through returned JSON strings and apply eviction / unresponsive check
 		for _, val := range values {
 			if val == nil {
 				continue
@@ -403,13 +422,6 @@ func getInventoryJSON(rdb *redis.Client, ttlDuration time.Duration) ([]byte, err
 
 			elapsed := now - node.LastSeen
 
-			// Tier 2: Hard eviction if elapsed > 2 * ttlSeconds
-			if ttlSeconds > 0 && elapsed > 2*ttlSeconds {
-				rdb.Del(ctx, fmt.Sprintf("host:%s", node.Hostname))
-				log.Printf("Evicted node %s (inactive for %ds > 2x TTL)", node.Hostname, elapsed)
-				continue
-			}
-
 			if node.Vars == nil {
 				node.Vars = make(map[string]interface{})
 			}
@@ -417,16 +429,35 @@ func getInventoryJSON(rdb *redis.Client, ttlDuration time.Duration) ([]byte, err
 			node.Vars["last_seen"] = node.LastSeen
 			node.Vars["last_seen_seconds_ago"] = elapsed
 
-			// Tier 1: Unresponsive warning if elapsed > ttlSeconds (and <= 2 * ttlSeconds)
-			if ttlSeconds > 0 && elapsed > ttlSeconds {
-				node.Vars["status"] = "unresponsive"
-				node.Vars["unresponsive"] = true
+			if cfg.TwoTierEviction {
+				// Tier 2: Hard eviction if elapsed > 2 * ttlSeconds
+				if ttlSeconds > 0 && elapsed > 2*ttlSeconds {
+					rdb.Del(ctx, fmt.Sprintf("host:%s", node.Hostname))
+					log.Printf("Evicted node %s (inactive for %ds > 2x TTL)", node.Hostname, elapsed)
+					continue
+				}
 
-				// Assign to dynamic group "unresponsive"
-				g := inventory.Groups["unresponsive"]
-				g.Hosts = append(g.Hosts, node.Hostname)
-				inventory.Groups["unresponsive"] = g
+				// Tier 1: Unresponsive warning if elapsed > ttlSeconds (and <= 2 * ttlSeconds)
+				if ttlSeconds > 0 && elapsed > ttlSeconds {
+					node.Vars["status"] = "unresponsive"
+					node.Vars["unresponsive"] = true
+
+					// Assign to dynamic group "unresponsive"
+					g := inventory.Groups["unresponsive"]
+					g.Hosts = append(g.Hosts, node.Hostname)
+					inventory.Groups["unresponsive"] = g
+				} else {
+					node.Vars["status"] = "online"
+					node.Vars["unresponsive"] = false
+				}
 			} else {
+				// Standard 1-tier eviction: Hard evict if elapsed > ttlSeconds
+				if ttlSeconds > 0 && elapsed > ttlSeconds {
+					rdb.Del(ctx, fmt.Sprintf("host:%s", node.Hostname))
+					log.Printf("Evicted node %s (inactive for %ds > 1x TTL)", node.Hostname, elapsed)
+					continue
+				}
+
 				node.Vars["status"] = "online"
 				node.Vars["unresponsive"] = false
 			}
@@ -456,8 +487,8 @@ func getInventoryJSON(rdb *redis.Client, ttlDuration time.Duration) ([]byte, err
 }
 
 // generateInventory queries Redis and prints the JSON Ansible expects to stdout
-func generateInventory(rdb *redis.Client, ttlDuration time.Duration) {
-	output, err := getInventoryJSON(rdb, ttlDuration)
+func generateInventory(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration) {
+	output, err := getInventoryJSON(rdb, cfg, ttlDuration)
 	if err != nil {
 		log.Fatalf("Error generating JSON: %v", err)
 	}

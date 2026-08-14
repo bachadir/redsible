@@ -13,3 +13,7 @@ redis:
 
 # Time-To-Live for edge node inventory records (e.g., '30m', '2h', '24h')
 ttl: "2h"
+
+# Eviction Policy Settings
+# Set to true for 2-tier (1x warning, 2x hard eviction). Set to false for standard single-tier eviction at 1x TTL.
+two_tier_eviction: true

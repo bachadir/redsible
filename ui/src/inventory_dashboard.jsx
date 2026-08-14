@@ -8,6 +8,8 @@ import {
 // Mock data to ensure UI preview capabilities and fallback when Redis is empty/offline.
 const MOCK_API_RESPONSE = {
     "_meta": {
+        "two_tier_eviction": true,
+        "ttl": "2h",
         "hostvars": {
             "web-prod-01.internal": { "ansible_host": "10.0.1.5", "os": "Ubuntu", "os_version": "22.04 LTS", "arch": "x86_64", "cpus": "4", "ram_mb": "8192", "environment": "production", "datacenter": "us-east-1", "kernel": "5.15.0-88-generic", "status": "online", "unresponsive": false },
             "web-prod-02.internal": { "ansible_host": "10.0.1.6", "os": "Ubuntu", "os_version": "22.04 LTS", "arch": "x86_64", "cpus": "4", "ram_mb": "8192", "environment": "production", "datacenter": "us-east-1", "kernel": "5.15.0-88-generic", "status": "online", "unresponsive": false },
@@ -33,6 +35,10 @@ export default function App() {
     const [selectedHost, setSelectedHost] = useState(null);
     const [copied, setCopied] = useState(false);
     const [actionNotice, setActionNotice] = useState(null);
+
+    // Eviction Policy Config State
+    const [twoTierActive, setTwoTierActive] = useState(true);
+    const [activeTtl, setActiveTtl] = useState('2h');
 
     // Filters
     const [searchTerm, setSearchTerm] = useState('');
@@ -78,6 +84,14 @@ export default function App() {
         const osSet = new Set();
         const hostvars = data._meta?.hostvars || {};
         const hostGroupsMap = {};
+
+        // Parse Eviction Policy Config
+        if (data._meta?.two_tier_eviction !== undefined) {
+            setTwoTierActive(data._meta.two_tier_eviction);
+        }
+        if (data._meta?.ttl) {
+            setActiveTtl(data._meta.ttl);
+        }
 
         Object.keys(data).forEach(groupName => {
             if (groupName === '_meta' || groupName === 'all') return;
@@ -202,9 +216,15 @@ export default function App() {
                     <div>
                         <div className="flex items-center gap-2">
                             <h1 className="text-lg font-bold text-slate-100 tracking-tight">Redsible Dashboard</h1>
-                            <span className="px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                2-Tier Eviction Active
-                            </span>
+                            {twoTierActive ? (
+                                <span className="px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                    2-Tier Eviction Active
+                                </span>
+                            ) : (
+                                <span className="px-2 py-0.5 text-[10px] uppercase font-semibold tracking-wider rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                    Standard Eviction Active
+                                </span>
+                            )}
                         </div>
                         <p className="text-xs text-slate-400 font-medium tracking-wide">
                             Redis-Backed Ansible Dynamic Inventory SSOT
@@ -449,13 +469,14 @@ export default function App() {
                                 </div>
                             </div>
 
+                            {/* Eviction Policy TTL Card */}
                             <div className="bg-slate-800/70 border border-slate-700/60 p-4 rounded-xl flex items-center gap-4">
                                 <div className="p-3 bg-blue-500/10 text-blue-400 rounded-lg">
                                     <Activity size={20} />
                                 </div>
                                 <div>
-                                    <div className="text-sm font-bold text-blue-400">2-Tier Policy</div>
-                                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">1x Warn • 2x Evict</div>
+                                    <div className="text-sm font-bold text-blue-400">{activeTtl} Auto-TTL</div>
+                                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Eviction Policy</div>
                                 </div>
                             </div>
                         </div>
