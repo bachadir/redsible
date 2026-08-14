@@ -465,6 +465,37 @@ func getInventoryJSON(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Durati
 			// Add the node's variables to the _meta.hostvars dictionary
 			inventory.Meta.Hostvars[node.Hostname] = node.Vars
 
+			// Dynamically assign groups based on OS, OS_Version, and Roles
+			if node.Vars != nil {
+				// OS
+				if osVal, ok := node.Vars["os"].(string); ok && osVal != "" {
+					cleanOS := strings.ReplaceAll(strings.ToLower(osVal), " ", "_")
+					osGroup := cleanOS + "_servers"
+					node.Groups = append(node.Groups, osGroup)
+
+					// OS Version
+					if versionVal, ok := node.Vars["os_version"].(string); ok && versionVal != "" {
+						cleanVersion := strings.ReplaceAll(strings.ToLower(versionVal), " ", "_")
+						osVersionGroup := cleanOS + "_" + cleanVersion + "_servers"
+						node.Groups = append(node.Groups, osVersionGroup)
+					}
+				}
+
+				// Role(s)
+				if roleVal, ok := node.Vars["role"].(string); ok && roleVal != "" {
+					cleanRole := strings.ReplaceAll(strings.ToLower(roleVal), " ", "_")
+					node.Groups = append(node.Groups, cleanRole)
+				}
+				if rolesVal, ok := node.Vars["roles"].([]interface{}); ok {
+					for _, r := range rolesVal {
+						if rStr, isStr := r.(string); isStr && rStr != "" {
+							cleanRole := strings.ReplaceAll(strings.ToLower(rStr), " ", "_")
+							node.Groups = append(node.Groups, cleanRole)
+						}
+					}
+				}
+			}
+
 			// Assign the node to its declared groups
 			for _, group := range node.Groups {
 				g, exists := inventory.Groups[group]
@@ -483,7 +514,7 @@ func getInventoryJSON(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Durati
 	}
 
 	// Step 4: Serialize to JSON
-	return json.Marshal(inventory)
+	return json.Marshal(&inventory)
 }
 
 // generateInventory queries Redis and prints the JSON Ansible expects to stdout

@@ -172,7 +172,8 @@ export default function App() {
     const filteredHosts = hosts.filter(host => {
         const matchesSearch =
             host.hostname.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (host.vars.ansible_host && host.vars.ansible_host.toLowerCase().includes(searchTerm.toLowerCase()));
+            (host.vars.ansible_host && host.vars.ansible_host.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            (host.groups && host.groups.some(group => group.toLowerCase().includes(searchTerm.toLowerCase())));
 
         const matchesGroup = selectedGroup === 'all' || host.groups.includes(selectedGroup);
         const matchesOs = osFilter === 'all' || host.vars.os === osFilter;
@@ -490,7 +491,7 @@ export default function App() {
                                     </div>
                                     <input
                                         type="text"
-                                        placeholder="Search inventory by hostname or IP address..."
+                                        placeholder="Search inventory by hostname, IP address, or group..."
                                         className="block w-full pl-10 pr-4 py-2.5 bg-slate-900/80 border border-slate-700 rounded-xl leading-5 text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm shadow-inner transition-all"
                                         value={searchTerm}
                                         onChange={(e) => setSearchTerm(e.target.value)}
