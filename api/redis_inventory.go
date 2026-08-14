@@ -28,10 +28,67 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"gopkg.in/yaml.v3"
 )
 
 // Global Redis Context
 var ctx = context.Background()
+
+// ---------------------------------------------------------------------
+// Configuration Structures
+// ---------------------------------------------------------------------
+
+type AppConfig struct {
+	Server ServerConfig `yaml:"server"`
+	Redis  RedisConfig  `yaml:"redis"`
+	TTL    string       `yaml:"ttl"`
+}
+
+type ServerConfig struct {
+	Port int    `yaml:"port"`
+	Host string `yaml:"host"`
+}
+
+type RedisConfig struct {
+	Address  string `yaml:"address"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+}
+
+// loadConfig loads configuration from a YAML file if specified or available
+func loadConfig(configPath string) (*AppConfig, error) {
+	cfg := &AppConfig{
+		Server: ServerConfig{
+			Port: 8080,
+			Host: "0.0.0.0",
+		},
+		Redis: RedisConfig{
+			Address:  "localhost:6379",
+			Password: "",
+			DB:       0,
+		},
+		TTL: "2h",
+	}
+
+	if configPath == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			configPath = "config.yaml"
+		}
+	}
+
+	if configPath != "" {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read config file %s: %w", configPath, err)
+		}
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML config %s: %w", configPath, err)
+		}
+		log.Printf("Loaded configuration from %s", configPath)
+	}
+
+	return cfg, nil
+}
 
 // Helper to set CORS headers and handle preflight requests
 func enableCORS(w http.ResponseWriter, r *http.Request) bool {
@@ -88,38 +145,60 @@ func (a *AnsibleInventory) MarshalJSON() ([]byte, error) {
 // ---------------------------------------------------------------------
 func main() {
 	// Define command-line flags
+	configFlag := flag.String("config", "", "Path to YAML configuration file")
 	serveFlag := flag.Bool("serve", false, "Start the HTTP Ingest API server")
 	listFlag := flag.Bool("list", false, "Output Ansible dynamic inventory JSON")
 	hostFlag := flag.String("host", "", "Output specific host vars (Ansible spec)")
-	redisAddr := flag.String("redis", "localhost:6379", "Redis server address")
-	redisPass := flag.String("redis-pass", "", "Redis password")
-	ttlFlag := flag.String("ttl", "2h", "Time-To-Live for inventory records (e.g., '30m', '2h')")
+	redisAddr := flag.String("redis", "", "Redis server address (overrides config)")
+	redisPass := flag.String("redis-pass", "", "Redis password (overrides config)")
+	portFlag := flag.Int("port", 0, "HTTP API server port (overrides config)")
+	ttlFlag := flag.String("ttl", "", "Time-To-Live for inventory records (e.g. '30m', '2h')")
 
 	flag.Parse()
 
-	// Parse the TTL flag into a usable Go time.Duration
-	ttlDuration, err := time.ParseDuration(*ttlFlag)
+	// Load configuration (from file or defaults)
+	cfg, err := loadConfig(*configFlag)
+	if err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
+
+	// Apply CLI overrides if explicitly passed
+	if *redisAddr != "" {
+		cfg.Redis.Address = *redisAddr
+	}
+	if *redisPass != "" {
+		cfg.Redis.Password = *redisPass
+	}
+	if *portFlag != 0 {
+		cfg.Server.Port = *portFlag
+	}
+	if *ttlFlag != "" {
+		cfg.TTL = *ttlFlag
+	}
+
+	// Parse the TTL into a usable Go time.Duration
+	ttlDuration, err := time.ParseDuration(cfg.TTL)
 	if err != nil {
 		log.Fatalf("Invalid TTL format: %v. Use formats like '30m' or '2h'.", err)
 	}
 
 	// Initialize Redis Client
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     *redisAddr,
-		Password: *redisPass,
-		DB:       0, // Use default DB
+		Addr:     cfg.Redis.Address,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
 	})
 
 	// Route the execution based on flags
 	if *serveFlag {
-		startAPIServer(rdb, ttlDuration)
+		startAPIServer(rdb, cfg, ttlDuration)
 	} else if *listFlag {
 		generateInventory(rdb)
 	} else if *hostFlag != "" {
 		generateHostVars(rdb, *hostFlag)
 	} else {
 		// Ansible expects --list when executing a dynamic inventory script
-		fmt.Println("Usage: redis_inventory [--serve] | [--list] | [--host <hostname>]")
+		fmt.Println("Usage: redsible [--config config.yaml] [--serve] | [--list] | [--host <hostname>]")
 		os.Exit(1)
 	}
 }
@@ -129,7 +208,7 @@ func main() {
 // ---------------------------------------------------------------------
 
 // startAPIServer runs the HTTP server that edge nodes "phone home" to
-func startAPIServer(rdb *redis.Client, ttlDuration time.Duration) {
+func startAPIServer(rdb *redis.Client, cfg *AppConfig, ttlDuration time.Duration) {
 	// Expose the inventory over HTTP for the Ansible Plugin
 	http.HandleFunc("/inventory", func(w http.ResponseWriter, r *http.Request) {
 		if enableCORS(w, r) {
@@ -260,8 +339,9 @@ func startAPIServer(rdb *redis.Client, ttlDuration time.Duration) {
 		log.Printf("Deregistered node: %s", hostname)
 	})
 
-	log.Println("Starting Inventory Ingest API on :8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	log.Printf("Starting Inventory Ingest API on %s (TTL: %s)...", addr, cfg.TTL)
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
 // ---------------------------------------------------------------------

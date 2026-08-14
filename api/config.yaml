@@ -1,0 +1,15 @@
+# Redsible API Configuration File
+
+# Server Settings
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+# Redis Database Connection Settings
+redis:
+  address: "localhost:6379"
+  password: ""
+  db: 0
+
+# Time-To-Live for edge node inventory records (e.g., '30m', '2h', '24h')
+ttl: "2h"
